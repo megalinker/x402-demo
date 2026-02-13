@@ -1,7 +1,9 @@
-import { createWalletClient, http, parseAbi, publicActions } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+// scripts/buy.ts
 import "dotenv/config";
+
+import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
+import { registerExactEvmScheme } from "@x402/evm/exact/client";
+import { privateKeyToAccount } from "viem/accounts";
 
 if (!process.env.PRIVATE_KEY) {
   throw new Error("Please set PRIVATE_KEY in your .env file");
@@ -10,105 +12,86 @@ if (!process.env.PRIVATE_KEY) {
 const privateKey = process.env.PRIVATE_KEY.startsWith("0x")
   ? process.env.PRIVATE_KEY
   : `0x${process.env.PRIVATE_KEY}`;
-const account = privateKeyToAccount(privateKey as `0x${string}`);
 
-const client = createWalletClient({
-  account,
-  chain: baseSepolia,
-  transport: http(),
-}).extend(publicActions);
+const signer = privateKeyToAccount(privateKey as `0x${string}`);
+
+// 1. Setup the Client
+const client = new x402Client();
+registerExactEvmScheme(client, { signer });
+
+// 2. Create an "Explicit" Fetch Wrapper
+// This functions exactly like normal fetch but logs the conversation
+const explicitFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input.toString();
+  const method = init?.method || "GET";
+  
+  // Check if we are sending an Authorization header (happens on the retry)
+  const headers = new Headers(init?.headers);
+  const hasAuth = headers.has("Authorization");
+
+  console.log(`\n---------------------------------------------------------`);
+  console.log(`HTTP REQUEST: ${method} ${url}`);
+  if (hasAuth) {
+    console.log(`>> Authorization: PRESENT (Sending Proof/Payment)`);
+  } else {
+    console.log(`>> Authorization: NONE (Discovery Phase)`);
+  }
+
+  // --- EXECUTE REAL FETCH ---
+  const res = await fetch(input, init);
+  // -------------------------
+
+  console.log(`HTTP RESPONSE: ${res.status} ${res.statusText}`);
+
+  if (res.status === 402) {
+    console.log(`>> 🛑 Status 402 Detected. Checking Payment-Required header...`);
+    const pr = res.headers.get("Payment-Required");
+    if (pr) {
+      const details = JSON.parse(Buffer.from(pr, "base64").toString("utf8"));
+      console.log(`>> 📋 Requirements found:`, JSON.stringify(details, null, 2));
+      console.log(`>> 🤖 SDK will now execute payment logic and retry...`);
+    }
+  } else if (res.ok) {
+    console.log(`>> ✅ Success! Content delivered.`);
+  }
+
+  return res;
+};
+
+// 3. Wrap the explicit fetch with the Payment Logic
+const fetchWithPayment = wrapFetchWithPayment(explicitFetch, client);
 
 async function main() {
   const url = process.argv[2] || "https://x402-demo-omega.vercel.app/api/paid";
-  console.log(`Checking ${url}...`);
+  
+  console.log(`\n🚀 Starting purchase flow for: ${url}`);
 
-  const res = await fetch(url);
+  // This single call will trigger the logging twice:
+  // 1. First for the 402 (Discovery)
+  // 2. Second for the 200 (Verification)
+  const res = await fetchWithPayment(url, { method: "GET" });
+
+  console.log(`\n---------------------------------------------------------`);
+  console.log("FINAL STATUS:", res.status);
+
   if (res.ok) {
-    console.log("Access granted!");
-    console.log(await res.json());
-    return;
-  }
+    const body = await res.json();
+    console.log("FINAL BODY:", body);
 
-  if (res.status !== 402) {
-    console.log("Response status:", res.status);
-    console.log(await res.text());
-    return;
-  }
-  console.log("Access denied (402). Purchasing...");
-
-  const header = res.headers.get("payment-required");
-  if (!header) {
-    console.error("No payment-required header found");
-    return;
-  }
-
-  const reqs = JSON.parse(Buffer.from(header, "base64").toString());
-  const option = reqs.accepts[0];
-  console.log("Payment requirements:", option);
-
-  const tokenAddress = option.asset as `0x${string}`;
-  const to = option.payTo as `0x${string}`;
-  const amount = BigInt(option.amount);
-
-  console.log(`Sending ${amount} units of ${tokenAddress} to ${to}...`);
-
-  const abi = parseAbi(["function transfer(address to, uint256 amount) returns (bool)"]);
-
-  const hash = await client.writeContract({
-    address: tokenAddress,
-    abi,
-    functionName: "transfer",
-    args: [to, amount],
-  });
-
-  console.log("Transaction sent:", hash);
-  console.log("Waiting for confirmation...");
-
-  const receipt = await client.waitForTransactionReceipt({ hash });
-  console.log("Transaction confirmed in block", receipt.blockNumber);
-
-  console.log("Verifying access...");
-  const authPayload = JSON.stringify({
-    hash,
-    payload: {
-      authorization: {
-        to: option.payTo,
-      },
-    },
-  });
-  const authHeader = `Exact ${Buffer.from(authPayload).toString("base64")}`;
-  console.log("Sending Authorization header:", authHeader);
-
-  let res2 = await fetch(url, {
-    headers: { Authorization: authHeader },
-  });
-
-  console.log("Verification response status:", res2.status);
-
-  for (let i = 0; i < 5 && res2.status === 402; i++) {
-    console.log(`Verification failed (402). Retrying in 2s...`);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    res2 = await fetch(url, { headers: { Authorization: authHeader } });
-    console.log("Verification response status:", res2.status);
-  }
-
-  if (res2.ok) {
-    console.log("Access granted!");
-    console.log(await res2.json());
-  } else {
-    console.error("Access denied:", res2.status);
-    console.error("Response body:", await res2.text());
-
-    const prHeader = res2.headers.get("payment-required");
-    if (prHeader) {
-      console.log("Payment-Required header present:");
-      try {
-        console.log(JSON.parse(Buffer.from(prHeader, "base64").toString()));
-      } catch (e) {
-        console.log(prHeader);
-      }
+    // Optional: Parse the settlement receipt
+    const httpClient = new x402HTTPClient(client);
+    const paymentResponse = httpClient.getPaymentSettleResponse((name) =>
+      res.headers.get(name)
+    );
+    if (paymentResponse) {
+        console.log("SETTLEMENT RECEIPT:", paymentResponse);
     }
+  } else {
+    console.log("Request failed:", await res.text());
   }
 }
 
-main().catch(console.error);
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
