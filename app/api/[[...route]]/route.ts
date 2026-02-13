@@ -80,7 +80,7 @@ async function createPayToAddress(context: any) {
 app.use(
   paymentMiddleware(
     {
-      "GET /paid": {
+      "GET /api/paid": {
         accepts: [
           {
             scheme: "exact",
