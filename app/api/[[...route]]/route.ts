@@ -37,30 +37,59 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 
 const PRICE_USD = 0.5;
 
-async function createPayToAddress(context: any) {
-    // 1. Try to get header from Hono context (context.req) OR direct property
-    let authHeader = context.paymentHeader;
+// ... inside app/api/[[...route]]/route.ts
 
-    // If running in Hono, context is 'c', so we grab the header from the request
-    if (!authHeader && context.req && typeof context.req.header === 'function') {
-        const rawHeader = context.req.header("Authorization");
-        if (rawHeader && rawHeader.startsWith("Exact ")) {
-            authHeader = rawHeader.slice(6); // Remove "Exact " prefix
+async function createPayToAddress(context: any) {
+    // 1. ROBUST HEADER EXTRACTION
+    let authHeader: string | undefined | null = context.paymentHeader;
+
+    // If not pre-populated, try to fish it out of the Hono Request object
+    if (!authHeader && context.req) {
+        // Try the standard Hono method first (handles case-insensitivity)
+        if (typeof context.req.header === "function") {
+            authHeader = context.req.header("Authorization");
+        }
+        
+        // Fallback: Check raw headers if the method failed or returned nothing
+        if (!authHeader && context.req.headers) {
+            // If headers is a Map/Headers object
+            if (typeof context.req.headers.get === "function") {
+                authHeader = context.req.headers.get("Authorization");
+            } 
+            // If headers is a plain object
+            else {
+                authHeader = context.req.headers["authorization"] || context.req.headers["Authorization"];
+            }
         }
     }
 
-    // 2. Reuse destination if header is present
+    // 2. DECODE AND RETURN IF FOUND
     if (authHeader) {
+        // Strip the "Exact " prefix if present
+        if (authHeader.startsWith("Exact ")) {
+            authHeader = authHeader.substring(6);
+        }
+
         try {
             const decoded = JSON.parse(Buffer.from(authHeader, "base64").toString());
             const toAddress = decoded.payload?.authorization?.to;
-            if (toAddress && typeof toAddress === "string") return toAddress;
+
+            // Log success to Vercel logs so you know it worked
+            console.log(`[createPayToAddress] Recovered address from header: ${toAddress}`);
+            
+            if (toAddress && typeof toAddress === "string") {
+                return toAddress;
+            }
         } catch (e) {
-            console.error("Failed to decode auth header:", e);
+            console.error("[createPayToAddress] Failed to decode header:", e);
         }
+    } else {
+        // Log failure - this explains why you get the Stripe warning later
+        console.log("[createPayToAddress] No Authorization header found. Context keys:", Object.keys(context));
     }
 
-    // 3. Fallback: Create new Stripe PaymentIntent
+    // 3. FALLBACK: NEW STRIPE ORDER
+    // This code only runs if the header was missing (First request) or extraction failed.
     const amountInCents = Math.round(PRICE_USD * 100);
 
     const paymentIntent = await stripe.paymentIntents.create({
@@ -80,6 +109,8 @@ async function createPayToAddress(context: any) {
     const payToAddress = depositDetails?.deposit_addresses?.["base"]?.address;
 
     if (!payToAddress) {
+        // This warning is NORMAL for the *first* request (discovery) because Stripe
+        // crypto payments usually require a redirect. We use the fallback for the demo.
         if (nextAction?.type === "redirect_to_url") {
             console.warn("Stripe returned a redirect. Using fallback address for demo.");
             return "0x71C7656EC7ab88b098defB751B7401B5f6d8976F";
