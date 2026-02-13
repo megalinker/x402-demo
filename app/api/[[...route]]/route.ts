@@ -38,13 +38,29 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 const PRICE_USD = 0.5;
 
 async function createPayToAddress(context: any) {
-    // Reuse destination if already present
-    if (context.paymentHeader) {
-        const decoded = JSON.parse(Buffer.from(context.paymentHeader, "base64").toString());
-        const toAddress = decoded.payload?.authorization?.to;
-        if (toAddress && typeof toAddress === "string") return toAddress;
+    // 1. Try to get header from Hono context (context.req) OR direct property
+    let authHeader = context.paymentHeader;
+
+    // If running in Hono, context is 'c', so we grab the header from the request
+    if (!authHeader && context.req && typeof context.req.header === 'function') {
+        const rawHeader = context.req.header("Authorization");
+        if (rawHeader && rawHeader.startsWith("Exact ")) {
+            authHeader = rawHeader.slice(6); // Remove "Exact " prefix
+        }
     }
 
+    // 2. Reuse destination if header is present
+    if (authHeader) {
+        try {
+            const decoded = JSON.parse(Buffer.from(authHeader, "base64").toString());
+            const toAddress = decoded.payload?.authorization?.to;
+            if (toAddress && typeof toAddress === "string") return toAddress;
+        } catch (e) {
+            console.error("Failed to decode auth header:", e);
+        }
+    }
+
+    // 3. Fallback: Create new Stripe PaymentIntent
     const amountInCents = Math.round(PRICE_USD * 100);
 
     const paymentIntent = await stripe.paymentIntents.create({

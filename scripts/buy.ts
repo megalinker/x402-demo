@@ -68,19 +68,46 @@ async function main() {
   console.log("Transaction confirmed in block", receipt.blockNumber);
 
   console.log("Verifying access...");
-  const authPayload = JSON.stringify({ hash });
+  const authPayload = JSON.stringify({
+    hash,
+    payload: {
+      authorization: {
+        to: option.payTo,
+      },
+    },
+  });
   const authHeader = `Exact ${Buffer.from(authPayload).toString("base64")}`;
+  console.log("Sending Authorization header:", authHeader);
 
-  const res2 = await fetch(url, {
+  let res2 = await fetch(url, {
     headers: { Authorization: authHeader },
   });
+
+  console.log("Verification response status:", res2.status);
+
+  for (let i = 0; i < 5 && res2.status === 402; i++) {
+    console.log(`Verification failed (402). Retrying in 2s...`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    res2 = await fetch(url, { headers: { Authorization: authHeader } });
+    console.log("Verification response status:", res2.status);
+  }
 
   if (res2.ok) {
     console.log("Access granted!");
     console.log(await res2.json());
   } else {
     console.error("Access denied:", res2.status);
-    console.error(await res2.text());
+    console.error("Response body:", await res2.text());
+
+    const prHeader = res2.headers.get("payment-required");
+    if (prHeader) {
+      console.log("Payment-Required header present:");
+      try {
+        console.log(JSON.parse(Buffer.from(prHeader, "base64").toString()));
+      } catch (e) {
+        console.log(prHeader);
+      }
+    }
   }
 }
 
