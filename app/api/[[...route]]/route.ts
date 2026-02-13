@@ -54,6 +54,9 @@ async function createPayToAddress(context: any) {
     payment_method_types: ["crypto"],
     payment_method_data: { type: "crypto" },
     confirm: true,
+    return_url: process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}/api/paid`
+      : "http://localhost:3000/api/paid",
     metadata: { sku: "conceptual_good_v1", channel: "x402" },
   });
 
