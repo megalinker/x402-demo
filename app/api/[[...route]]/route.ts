@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { handle } from "hono/vercel";
+import { logger } from "hono/logger";
 
 import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
@@ -25,6 +26,53 @@ function requireCaip2(name: string, value: string | undefined): Caip2NetworkId {
 const X402_NETWORK_ID = requireCaip2("X402_NETWORK_ID", process.env.X402_NETWORK_ID);
 
 const app = new Hono().basePath("/api");
+
+// 1. Standard Request Timing
+app.use("*", logger());
+
+// 2. x402 Deep Inspection Middleware
+// This sits before the paymentMiddleware to "spy" on the headers.
+app.use("*", async (c, next) => {
+    console.log(`\n⬇️ [SERVER INCOMING] ${c.req.method} ${c.req.path}`);
+
+    // Inspect Incoming Authorization (The Client's Payment Proof)
+    const authHeader = c.req.header("Authorization");
+    if (authHeader) {
+        console.log(`🔍 [SERVER] Authorization Header Present`);
+        try {
+            // Authorization format: "Scheme <Base64Token>"
+            const parts = authHeader.split(" ");
+            if (parts.length === 2) {
+                const decoded = JSON.parse(Buffer.from(parts[1], "base64").toString());
+                console.log(`🔓 [SERVER] Decoded Payment Proof:`);
+                console.dir(decoded, { depth: null, colors: true });
+            }
+        } catch (e) {
+            console.log(`⚠️ [SERVER] Could not decode auth token:`, e);
+        }
+    } else {
+        console.log(`⚪ [SERVER] No Authorization Header (Discovery Phase)`);
+    }
+
+    await next();
+
+    // Inspect Outgoing Response (The Server's Payment Terms)
+    console.log(`⬆️ [SERVER OUTGOING] Status: ${c.res.status}`);
+
+    if (c.res.status === 402) {
+        const pr = c.res.headers.get("Payment-Required");
+        if (pr) {
+            try {
+                // Payment-Required format: "<Base64JSON>"
+                const decodedPr = JSON.parse(Buffer.from(pr, "base64").toString());
+                console.log(`📝 [SERVER] Sending Payment Terms (402):`);
+                console.dir(decodedPr, { depth: null, colors: true });
+            } catch (e) {
+                console.log(`⚠️ [SERVER] Could not decode Payment-Required header:`, e);
+            }
+        }
+    }
+});
 
 const facilitatorClient = new HTTPFacilitatorClient({
     url: process.env.X402_FACILITATOR_URL!,
