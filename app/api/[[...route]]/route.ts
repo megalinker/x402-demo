@@ -39,7 +39,7 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 const PRICE_USD = 0.5;
 
 async function createPayToAddress(context: any) {
-  // If a payment header exists, reuse the "to" address.
+  // Reuse destination if already present
   if (context.paymentHeader) {
     const decoded = JSON.parse(Buffer.from(context.paymentHeader, "base64").toString());
     const toAddress = decoded.payload?.authorization?.to;
@@ -53,21 +53,23 @@ async function createPayToAddress(context: any) {
     currency: "usd",
     payment_method_types: ["crypto"],
     payment_method_data: { type: "crypto" },
+
+    // ✅ CRITICAL: custom mode returns deposit addresses for x402
+    payment_method_options: {
+      crypto: { mode: "custom" } as any, // (cast if your stripe typings lag)
+    },
+
     confirm: true,
-    return_url: process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}/api/paid`
-      : "http://localhost:3000/api/paid",
     metadata: { sku: "conceptual_good_v1", channel: "x402" },
   });
 
-  // Typings may not expose this even though the API returns it. :contentReference[oaicite:2]{index=2}
   const nextAction: any = paymentIntent.next_action;
   const depositDetails = nextAction?.crypto_collect_deposit_details;
-  const payToAddress = depositDetails?.deposit_addresses?.base?.address;
+  const payToAddress = depositDetails?.deposit_addresses?.["base"]?.address;
 
   if (!payToAddress) {
     throw new Error(
-      `Stripe PaymentIntent missing Base deposit address (next_action: ${nextAction?.type ?? "none"})`
+      `Missing Base deposit address. next_action.type=${nextAction?.type ?? "none"}`
     );
   }
 
