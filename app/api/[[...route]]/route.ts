@@ -48,17 +48,11 @@ async function createPayToAddress(context: any) {
 
   const amountInCents = Math.round(PRICE_USD * 100);
 
-  // Stripe docs for x402 use crypto "custom" mode to obtain deposit addresses. :contentReference[oaicite:1]{index=1}
-  // Some stripe-node typings don't include { mode } yet, so we cast narrowly.
-  const cryptoOpts =
-    ({ mode: "custom" } as unknown as Stripe.PaymentIntentCreateParams.PaymentMethodOptions.Crypto);
-
   const paymentIntent = await stripe.paymentIntents.create({
     amount: amountInCents,
     currency: "usd",
     payment_method_types: ["crypto"],
     payment_method_data: { type: "crypto" },
-    payment_method_options: { crypto: cryptoOpts },
     confirm: true,
     metadata: { sku: "conceptual_good_v1", channel: "x402" },
   });
