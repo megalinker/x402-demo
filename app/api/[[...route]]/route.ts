@@ -5,7 +5,6 @@ import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 
-import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 
 export const runtime = "nodejs";
